@@ -64,6 +64,11 @@ impl LibraClient {
             latest_epoch_change_li: None,
         })
     }
+    
+    /// updates client url
+    pub fn update_url(&mut self, url: Url) {
+        self.client.update_url(url);
+    }
 
     /// Submits a transaction and bumps the sequence number for the sender, pass in `None` for
     /// sender_account if sender's address is not managed by the client.

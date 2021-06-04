@@ -104,9 +104,18 @@ pub fn mine_and_submit(
         status_err!("Genesis block_0.json not found. Exiting.");
         std::process::exit(0);
     } else {
+        // the max block that has been succesfully submitted to client
+        let mut client_known_block_number = current_block_number.unwrap();
+        // in the beginning, mining height is +1 of client block number
+        let mut mining_height = client_known_block_number + 1; 
+
         // mine continuously from the last block in the file systems
-        let mut mining_height = current_block_number.unwrap() + 1;
         loop {
+            status_info!(
+                "Latest client block:",
+                format!("{}", client_known_block_number)
+            );
+
             status_info!(format!("Block {}", mining_height), "Mining VDF Proof");
 
             let block = mine_once(&config)?;
@@ -114,23 +123,61 @@ pub fn mine_and_submit(
                 "Proof mined:",
                 format!("block_{}.json created.", block.height.to_string())
             );
+            
+            // block mined successfully. Setting next block index
+            mining_height = block.height + 1; 
 
-            if let Some(ref _node) = config.profile.default_node {
-                match commit_proof_tx(&tx_params, block.preimage, block.proof, is_operator) {
-                    Ok(tx_view) => match eval_tx_status(tx_view) {
-                        Ok(_) => status_ok!("Success:", "Proof committed to chain"),
-                        Err(_) => status_err!("Miner transaction rejected"),
-                    },
-                    Err(err) => status_err!("Miner transaction rejected: {}", err),
+
+            for pending_block_number in (client_known_block_number+1)..(mining_height) {
+                status_info!(format!("Submitting Block {}", pending_block_number), "to Libra client");
+
+                let block_to_submit: Block;
+                if client_known_block_number!=(mining_height-2) {
+                    // read block
+                    let block_path = format!("{}/block_{}.json", blocks_dir.display(), pending_block_number);
+                    println!("block_path: {}", block_path);
+                    let block_file = fs::read_to_string(block_path).expect("Could not read latest block");
+                    block_to_submit = serde_json::from_str(&block_file).expect("could not deserialize latest block");
+                } else {
+                    block_to_submit = block.clone();
                 }
-            } else {
-                return Err(ErrorKind::Config
-                    .context("No Node for submitting transactions")
-                    .into());
+                        
+                // Submit tx
+                if let Some(ref _node) = config.profile.default_node {
+                    let do_steps = || -> Result<(), Error> {
+                        submit_proof(&tx_params, block_to_submit.clone(), is_operator)?;
+                        Ok(())
+                    };
+                    match do_steps() {
+                        Ok(()) => client_known_block_number = block_to_submit.height,
+                        Err(err) => println!("Failed to perform necessary steps"),
+                    }
+                } else {
+                    return Err(ErrorKind::Config
+                        .context("No Node for submitting transactions")
+                        .into());
+                }
             }
 
-            mining_height = block.height + 1;
         }
+    }
+}
+
+fn submit_proof(tx_params: &TxParams, block_to_submit: Block, 
+    is_operator: bool) -> Result<(), Error> {
+    match commit_proof_tx(&tx_params, block_to_submit.preimage, block_to_submit.proof, is_operator) {
+        Ok(tx_view) => match eval_tx_status(tx_view) {
+            Ok(_) => { 
+                status_ok!("Success:", "Proof committed to chain");
+                Ok(())
+            },
+            Err(_) => Err(ErrorKind::Config
+                .context("No Node for submitting transactions")
+                .into()),
+        },
+        Err(err) => Err(ErrorKind::Config
+            .context("No Node for submitting transactions")
+            .into()),
     }
 }
 
@@ -155,6 +202,7 @@ pub fn parse_block_height(blocks_dir: &PathBuf) -> (Option<u64>, Option<PathBuf>
     let mut max_block_path = None;
 
     // iterate through all json files in the directory.
+    println!("{}/block_*.json", blocks_dir.display());
     for entry in glob(&format!("{}/block_*.json", blocks_dir.display()))
         .expect("Failed to read glob pattern")
     {

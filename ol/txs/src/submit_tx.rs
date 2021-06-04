@@ -35,6 +35,7 @@ use std::{
     path::PathBuf,
     thread, time,
 };
+
 /// All the parameters needed for a client transaction.
 #[derive(Debug)]
 pub struct TxParams {
@@ -161,6 +162,8 @@ fn stage(
     (signer_account_data, txn)
 }
 /// Submit a transaction to the network.
+
+
 pub fn submit_tx(
     mut client: LibraClient,
     txn: SignedTransaction,
@@ -168,6 +171,9 @@ pub fn submit_tx(
 ) -> Result<TransactionView, Error> {
     // let mut client = LibraClient::new(tx_params.url.clone(), tx_params.waypoint).unwrap();
     // Submit the transaction with libra_client
+    let path = PathBuf::from("/home/teja9999/libra/swarm_temp");
+    let (url, _waypoint) = ol_types::config::get_swarm_configs(path);
+    client.update_url(url);
     match client.submit_transaction(Some(&mut signer_account_data), txn.clone()) {
         Ok(_) => match wait_for_tx(txn.sender(), txn.sequence_number(), &mut client) {
             Some(res) => Ok(res),
@@ -383,12 +389,16 @@ pub fn wait_for_tx(
         signer_address, sequence_number
     );
 
+    let mut iter = 0;
+    const MAX_ITERATIONS: u8 = 10; // 5000 * 2/1000
     loop {
         thread::sleep(time::Duration::from_millis(1000));
         // prevent all the logging the client does while
         // it loops through the query.
         stdout().flush().unwrap();
-
+        let path = PathBuf::from("/home/teja9999/libra/swarm_temp");
+        let (url, _waypoint) = ol_types::config::get_swarm_configs(path);
+        client.update_url(url);
         match &mut client.get_txn_by_acc_seq(signer_address, sequence_number, false) {
             Ok(Some(txn_view)) => {
                 return Some(txn_view.to_owned());
@@ -399,6 +409,11 @@ pub fn wait_for_tx(
             _ => {
                 print!(".");
             }
+        }
+        iter += 1;
+
+        if iter==MAX_ITERATIONS {
+            return None;
         }
     }
 }
