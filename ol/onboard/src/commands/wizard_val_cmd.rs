@@ -3,18 +3,21 @@
 #![allow(clippy::never_loop)]
 
 use super::files_cmd;
-use crate::prelude::app_config;
+
+
 use crate::entrypoint;
+use crate::prelude::app_config;
 use abscissa_core::{status_info, status_ok, Command, Options, Runnable};
 use libra_genesis_tool::node_files;
-use libra_types::{transaction::SignedTransaction, waypoint::Waypoint};
+use libra_types::{transaction::SignedTransaction};
 use libra_wallet::WalletLibrary;
 use ol::{commands::init_cmd, config::AppCfg};
 use ol_keys::{scheme::KeyScheme, wallet};
 use ol_types::block::Block;
+use ol_types::config::IS_TEST;
 use ol_types::{account::ValConfigs, autopay::PayInstruction, config::TxType};
 use reqwest::Url;
-use serde_json::Value;
+use std::process::exit;
 use std::{fs::File, io::Write, path::PathBuf};
 use txs::{commands::autopay_batch_cmd, submit_tx};
 /// `val-wizard` subcommand
@@ -43,41 +46,53 @@ pub struct ValWizardCmd {
     autopay_file: Option<PathBuf>,
     #[options(help = "An upstream peer to use in 0L.toml")]
     upstream_peer: Option<Url>,
+    #[options(help = "If validator is building from source")]
+    source_path: Option<PathBuf>,
 }
 
 impl Runnable for ValWizardCmd {
     /// Print version message
     fn run(&self) {
+        // Note. `onboard` command DOES NOT READ CONFIGS FROM 0L.toml
+
         status_info!("\nValidator Config Wizard.", "Next you'll enter your mnemonic and some other info to configure your validator node and on-chain account. If you haven't yet generated keys, run the standalone keygen tool with 'ol keygen'.\n\nYour first 0L proof-of-work will be mined now. Expect this to take up to 15 minutes on modern CPUs.\n");
+        
+        let entry_args = entrypoint::get_args();
 
         // Get credentials from prompt
         let (authkey, account, wallet) = wallet::get_account_from_prompt();
 
-        let cfg = app_config().clone(); // read 0L.toml in case it exists
- 
-        let upstream = match cfg.profile.upstream_nodes {
-            Some(url) => url[0].to_owned(),   
-            _ => Url::parse("http://localhost:8080").unwrap(),  // default if not configured otherwise
-        };
+        let mut upstream = self.upstream_peer.clone().unwrap_or_else(|| {
+            self.template_url.clone().unwrap_or_else(|| {
+                println!("ERROR: Must set a URL to query chain. Use --upstream-peer of --template-url. Exiting.");
+                exit(1);
+            })
+        });
+        upstream.set_port(Some(8080)).unwrap();
+        println!(
+            "Setting upstream peer URL to: {:?}",
+            &upstream
+        );
 
-        println!("staring validator wizard with upstream URL: {:?}", &upstream);
-
-        let mut app_config =
-            AppCfg::init_app_configs(authkey, account, &Some(upstream), &Some(entrypoint::get_node_home()));
-
+        let app_config = AppCfg::init_app_configs(
+            authkey,
+            account,
+            &Some(upstream.clone()),
+            &None,
+            None,
+            None,
+            &self.source_path
+        );
         let home_path = &app_config.workspace.node_home;
-        
-        status_ok!("\nMiner config written", "\n...........................\n");
+        let base_waypoint = app_config.chain_info.base_waypoint.clone();
+
+
+        status_ok!("\nApp configs written", "\n...........................\n");
 
         if let Some(url) = &self.template_url {
-            
             let mut url = url.to_owned();
             url.set_port(Some(3030)).unwrap(); //web port
             save_template(&url.join("account.json").unwrap(), home_path);
-            let (epoch, wp) = get_epoch_info(&url.join("epoch.json").unwrap());
-
-            app_config.chain_info.base_epoch = epoch;
-            app_config.chain_info.base_waypoint = wp;
             // get autopay
             status_ok!("\nTemplate saved", "\n...........................\n");
         }
@@ -90,6 +105,7 @@ impl Runnable for ValWizardCmd {
             home_path,
             &app_config,
             &wallet,
+            entry_args.swarm_path.as_ref().is_some()
         );
         status_ok!(
             "\nAutopay transactions signed",
@@ -97,7 +113,7 @@ impl Runnable for ValWizardCmd {
         );
 
         // Initialize Validator Keys
-        init_cmd::initialize_validator(&wallet, &app_config).unwrap();
+        init_cmd::initialize_validator(&wallet, &app_config, base_waypoint).unwrap();
         status_ok!("\nKey file written", "\n...........................\n");
 
         // fetching the genesis files from genesis-archive
@@ -129,6 +145,7 @@ impl Runnable for ValWizardCmd {
             &namespace,
             &self.rebuild_genesis,
             &false,
+            base_waypoint,
         )
         .unwrap();
 
@@ -167,6 +184,7 @@ pub fn get_autopay_batch(
     home_path: &PathBuf,
     cfg: &AppCfg,
     wallet: &WalletLibrary,
+    is_swarm: bool,
 ) -> (Option<Vec<PayInstruction>>, Option<Vec<SignedTransaction>>) {
     let file_name = if template.is_some() {
         // assumes the template was downloaded from URL
@@ -181,13 +199,19 @@ pub fn get_autopay_batch(
         Some(starting_epoch.clone()),
     )
     .unwrap();
-    let script_vec = autopay_batch_cmd::process_instructions(instr_vec.clone(), &starting_epoch);
+    let script_vec = autopay_batch_cmd::process_instructions(instr_vec.clone());
     let url = cfg.what_url(false);
     let mut tx_params =
-        submit_tx::get_tx_params_from_toml(cfg.to_owned(), TxType::Miner, Some(wallet), url, None)
+        submit_tx::get_tx_params_from_toml(cfg.to_owned(), TxType::Miner, Some(wallet), url, None, is_swarm)
             .unwrap();
-    // give the tx a very long expiration, 1 day.
-    let tx_expiration_sec = 24 * 60 * 60;
+    let tx_expiration_sec = if *IS_TEST {
+      // creating fixtures here, so give it near infinite expiry
+      100 * 360 * 24 * 60 * 60
+    } else {
+      // give the tx a very long expiration, 7 days.
+      7 * 24 * 60 * 60
+    };
+
     tx_params.tx_cost.user_tx_timeout = tx_expiration_sec;
     let txn_vec = autopay_batch_cmd::sign_instructions(script_vec, 0, &tx_params);
     (Some(instr_vec), Some(txn_vec))
@@ -197,28 +221,15 @@ pub fn save_template(url: &Url, home_path: &PathBuf) -> PathBuf {
     let g_res = reqwest::blocking::get(&url.to_string());
     let g_path = home_path.join("template.json");
     let mut g_file = File::create(&g_path).expect("couldn't create file");
-    let g_content = g_res.unwrap().bytes().expect("cannot connect to upstream node").to_vec(); //.text().unwrap();
+    let g_content = g_res
+        .unwrap()
+        .bytes()
+        .expect("cannot connect to upstream node")
+        .to_vec(); //.text().unwrap();
     g_file.write_all(g_content.as_slice()).unwrap();
     g_path
 }
 
-fn get_epoch_info(url: &Url) -> (Option<u64>, Option<Waypoint>) {
-    let g_res = reqwest::blocking::get(&url.to_string());
-    let string = g_res.unwrap().text().unwrap();
-    let json: Value = string.parse().unwrap();
-    let epoch = json
-        .get("epoch")
-        .unwrap()
-        .as_u64()
-        .expect("should have epoch number");
-    let waypoint = json
-        .get("waypoint")
-        .unwrap()
-        .as_str()
-        .expect("should have epoch number");
-
-    (Some(epoch), waypoint.parse().ok())
-}
 
 /// Creates an account.json file for the validator
 pub fn write_account_json(

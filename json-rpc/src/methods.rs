@@ -665,13 +665,12 @@ async fn get_miner_state(
     service: JsonRpcService,
     request: JsonRpcRequest,
 ) -> Result<MinerStateResourceView, JsonRpcError> {
-
     let account_address = request.parse_account_address(0)?;
 
     // If versions are specified by the request parameters, use them, otherwise use the defaults
     let version = request.parse_version_param(1, "version")?;
 
-    let account_state_with_proof =  service.get_account_state(account_address, version)?;
+    let account_state_with_proof = service.get_account_state(account_address, version)?;
     match account_state_with_proof {
         Some(s) => {
             let ms :Option<MinerStateResource> = s.get_resource(MinerStateResource::resource_path().as_slice())?;
@@ -691,7 +690,6 @@ async fn query_oracle_upgrade(
     service: JsonRpcService,
     request: JsonRpcRequest,
 ) -> Result<OracleResourceView, JsonRpcError> {
-
     let account_address = AccountAddress::ZERO;
 
     // If versions are specified by the request parameters, use them, otherwise use the defaults

@@ -6,8 +6,8 @@ use abscissa_core::{Command, Options, Runnable};
 use libra_types::transaction::{Script, SignedTransaction};
 use crate::{entrypoint, sign_tx::sign_tx, submit_tx::{tx_params_wrapper, batch_wrapper, TxParams}};
 use dialoguer::Confirm;
-use std::path::PathBuf;
-use ol_types::{autopay::PayInstruction, config::{TxType, IS_CI}};
+use std::{path::PathBuf, process::exit};
+use ol_types::{autopay::PayInstruction, config::{TxType, IS_TEST}};
 
 /// command to submit a batch of autopay tx from file
 #[derive(Command, Debug, Default, Options)]
@@ -27,66 +27,34 @@ impl Runnable for AutopayBatchCmd {
         let epoch = crate::epoch::get_epoch(&tx_params);
         println!("The current epoch is: {}", epoch);
         let instructions = PayInstruction::parse_autopay_instructions(&self.autopay_batch_file, Some(epoch)).unwrap();
-        let scripts = process_instructions(instructions, &epoch);
+        let scripts = process_instructions(instructions);
         batch_wrapper(scripts, &tx_params, entry_args.no_send, entry_args.save_path)
-
     }
 }
 
 /// Process autopay instructions into scripts
-pub fn process_instructions(instructions: Vec<PayInstruction>, starting_epoch: &u64) -> Vec<Script> {
+pub fn process_instructions(instructions: Vec<PayInstruction>) -> Vec<Script> {
     // TODO: Check instruction IDs are sequential.
     instructions.into_iter().filter_map(|i| {
-        assert!(i.type_move.unwrap() <= 3);
+      // double check transactions
+        match i.type_move.unwrap()<= 3 {
+            true => {},
+            false => {
+              println!("Instruction type not valid for transactions: {:?}", &i);
+              exit(1); 
+            },
+        }
+        match i.duration_epochs.unwrap() > 0 {
+            true => {},
+            false => {
+              println!("Instructions must have duration greater than 0. Exiting. Instruction: {:?}", &i);
+              exit(1);
+            },
+        }
 
-        let warning = if i.type_move.unwrap() == 0 {
-          format!(
-              "Instruction {uid}: {note}\nSend {percent_balance:.2?}% of your total balance every day {count_epochs} times (until epoch {epoch_ending}) to address: {destination}?",
-              uid = &i.uid,
-              percent_balance = *&i.value_move.unwrap() as f64 /100f64,
-              count_epochs = &i.duration_epochs.unwrap_or_else(|| {
-                 &i.end_epoch.unwrap() - starting_epoch 
-                }),
-              note = &i.note.clone().unwrap(),
-              epoch_ending = &i.end_epoch.unwrap(),
-              destination = &i.destination,
-          )
-        } else if i.type_move.unwrap() == 1 {
-          format!(
-            "Instruction {uid}: {note}\nSend {percent_balance:.2?}% new incoming funds every day {count_epochs} times (until epoch {epoch_ending}) to address: {destination}?",
-            uid = &i.uid,
-            percent_balance = *&i.value_move.unwrap() as f64 /100f64,
-            count_epochs = &i.duration_epochs.unwrap_or_else(|| {
-                 &i.end_epoch.unwrap() - starting_epoch 
-                }),
-            note = &i.note.clone().unwrap(),
-            epoch_ending = &i.end_epoch.unwrap(),
-            destination = &i.destination,
-        )
-        } else if i.type_move.unwrap() == 2  {
-          format!(
-            "Instruction {uid}: {note}\nSend {total_val} every day {count_epochs} times  (until epoch {epoch_ending}) to address: {destination}?",
-            uid = &i.uid,
-            total_val = *&i.value_move.unwrap(),
-            count_epochs = &i.duration_epochs.unwrap_or_else(|| {
-              &i.end_epoch.unwrap() - starting_epoch 
-            }),
-            note = &i.note.clone().unwrap(),
-            epoch_ending = &i.end_epoch.unwrap(),
-            destination = &i.destination,
-        )
-        } else {
-          format!(
-            "Instruction {uid}: {note}\nSend {total_val} once to address: {destination}?",
-            uid = &i.uid,
-            note = &i.note.clone().unwrap(),
-            total_val = *&i.value_move.unwrap(),
-            destination = &i.destination,
-        )
-        };
-        println!("{}", &warning);
+        println!("{}", i.text_instruction());
         // accept if CI mode.
-        if *IS_CI { return Some(i) }            
+        if *IS_TEST { return Some(i) }            
         
         // check the user wants to do this.
         match Confirm::new().with_prompt("").interact().unwrap() {
@@ -142,6 +110,6 @@ fn test_instruction_script_match() {
       value_move: Some(1000u64),
   };
 
-  instr.check_instruction_safety(script).unwrap();
+  instr.check_instruction_match_tx(script).unwrap();
 
 }

@@ -23,11 +23,11 @@ MNEM="talent sunset lizard pill fame nuclear spy noodle basket okay critic grow 
 NUM_NODES = 2
 
 ifndef PREV_VERSION
-PREV_VERSION=v4.3.0
+PREV_VERSION=v4.3.1
 endif
 
 ifndef BRANCH_NAME
-BRANCH_NAME=release-v4.3.1
+BRANCH_NAME=main
 endif
 
 # USAGE: BRANCH_NAME=<latest branch> make -f test-upgrade.mk upgrade-test
@@ -46,7 +46,7 @@ prep:
 # save makefile outside of repo, since we'll need it across branches
 #	mkdir ${HOME}/.0L/ | true
 	mkdir -p ${UPGRADE_TEMP} | true
-	cp ${SOURCE_PATH}/ol/util/test-upgrade.mk ${SAFE_MAKE_FILE}
+	cp ${SOURCE_PATH}/ol/integration-tests/test-upgrade.mk ${SAFE_MAKE_FILE}
 
 get-prev:
 	cd ${SOURCE_PATH} && git reset --hard && git fetch

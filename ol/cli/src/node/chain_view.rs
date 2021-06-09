@@ -1,13 +1,12 @@
 //! `chain_info`
 use chrono::Utc;
-
-use libra_json_rpc_client::views::OracleResourceView;
+use libra_json_rpc_client::views::{OracleResourceView};
 use libra_types::{
   account_address::AccountAddress, account_state::AccountState, waypoint::Waypoint,
+  validators_stats::ValidatorsStatsResource,
 };
 use serde::{Deserialize, Serialize};
 use std::convert::TryFrom;
-
 use super::node::Node;
 
 /// name of chain info key for db
@@ -36,6 +35,8 @@ pub struct ChainView {
   pub upgrade: Option<OracleResourceView>,
   /// validator view
   pub validator_view: Option<Vec<ValidatorView>>,
+  /// validators stats
+  pub validators_stats: Option<ValidatorsStatsResource>,
 }
 
 #[derive(Default, Debug, Deserialize, Serialize, Clone)]
@@ -63,6 +64,10 @@ pub struct ValidatorView {
   pub contiguous_epochs_validating_and_mining: u64,
   /// epoch count since creation
   pub epochs_since_last_account_creation: u64,
+  /// total count votes in current epoch
+  pub vote_count_in_epoch: u64,
+  /// total block propositions in current epoch
+  pub prop_count_in_epoch: u64,
 }
 
 impl Node {
@@ -79,7 +84,7 @@ impl Node {
     // TODO: This is duplicated with check.rs
     let _ = self.client.get_state_proof();
     
-    cs.waypoint = self.client.waypoint();
+    cs.waypoint = self.client.waypoint().ok();
 
     if let Some(account_blob) = blob {
       let account_state = AccountState::try_from(&account_blob).unwrap();
@@ -96,6 +101,12 @@ impl Node {
         .unwrap()
         .payload()
         .len() as u64;
+
+      // Get vals stats
+      let validators_stats = account_state
+        .get_validators_stats()
+        .unwrap()
+        .unwrap();
 
       // Calculate Epoch Progress
       let ts = account_state
@@ -127,7 +138,6 @@ impl Node {
       cs.height = meta.version;
 
       cs.upgrade = self.client.query_oracle_upgrade().expect("could not get upgrade oracle view");
-
 
       let validators: Vec<ValidatorView> = account_state
         .get_validator_set()
@@ -162,6 +172,8 @@ impl Node {
             .unwrap()
             .unwrap();
 
+          let validator_stats = validators_stats.get_validator_current_stats(v.account_address().clone());
+
           ValidatorView {
             account_address: v.account_address().to_string(),
             voting_power: v.consensus_voting_power(),
@@ -177,11 +189,14 @@ impl Node {
             contiguous_epochs_validating_and_mining: ms
               .contiguous_epochs_validating_and_mining,
             epochs_since_last_account_creation: ms.epochs_since_last_account_creation,
+            vote_count_in_epoch: validator_stats.vote_count,
+            prop_count_in_epoch: validator_stats.prop_count,
           }
         })
         .collect();
       
       cs.validator_view = Some(validators.clone());
+      cs.validators_stats = Some(validators_stats);
 
       self.vitals.chain_view = Some(cs.clone());
 
@@ -191,22 +206,3 @@ impl Node {
     (None, None)
   }
 }
-// get chain info from cache
-// pub fn read_chain_info_cache() -> ChainView {
-//   let chain_state = DB_CACHE
-//     .get(CHAIN_INFO_DB_KEY.as_bytes())
-//     .unwrap()
-//     .expect("could not reach chain_info cache");
-//   let c: ChainView = serde_json::de::from_slice(&chain_state.as_slice()).unwrap();
-//   c
-// }
-
-// /// get chain info from cache
-// pub fn read_val_info_cache() -> Vec<ValidatorView> {
-//   let val_info = DB_CACHE
-//     .get(VAL_INFO_DB_KEY.as_bytes())
-//     .unwrap()
-//     .expect("could not reach chain_info cache");
-//   let v: Vec<ValidatorView> = serde_json::de::from_slice(&val_info.as_slice()).unwrap();
-//   v
-// }
