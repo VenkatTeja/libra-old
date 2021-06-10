@@ -118,39 +118,46 @@ pub fn mine_and_submit(
 
             status_info!(format!("Block {}", mining_height), "Mining VDF Proof");
 
-            let block = mine_once(&config)?;
+            let block_result = mine_once(&config);
+            let block: Block;
+            match block_result {
+                Ok(blk) => block = blk,
+                Err(err) => {
+                    status_warn!("Mining block {} failed: {}", mining_height, err);
+                    continue
+                }
+            }
+
             status_info!(
                 "Proof mined:",
                 format!("block_{}.json created.", block.height.to_string())
             );
             
-            // block mined successfully. Setting next block index
-            mining_height = block.height + 1; 
-
-
-            for pending_block_number in (client_known_block_number+1)..(mining_height) {
-                status_info!(format!("Submitting Block {}", pending_block_number), "to Libra client");
+            for pending_block_number in (client_known_block_number+1)..(mining_height+1) {
+                status_info!(format!("Committing Block {}", pending_block_number), "to chain");
 
                 let block_to_submit: Block;
-                if client_known_block_number!=(mining_height-2) {
+                if client_known_block_number!=(mining_height-1) {
                     // read block
                     let block_path = format!("{}/block_{}.json", blocks_dir.display(), pending_block_number);
-                    println!("block_path: {}", block_path);
                     let block_file = fs::read_to_string(block_path).expect("Could not read latest block");
                     block_to_submit = serde_json::from_str(&block_file).expect("could not deserialize latest block");
                 } else {
                     block_to_submit = block.clone();
                 }
-                        
+                
                 // Submit tx
                 if let Some(ref _node) = config.profile.default_node {
-                    let do_steps = || -> Result<(), Error> {
-                        submit_proof(&tx_params, block_to_submit.clone(), is_operator)?;
-                        Ok(())
-                    };
-                    match do_steps() {
-                        Ok(()) => client_known_block_number = block_to_submit.height,
-                        Err(err) => println!("Failed to perform necessary steps"),
+                    match commit_proof_tx(&tx_params, block_to_submit.preimage, block_to_submit.proof, is_operator) {
+                        Ok(tx_view) => {
+                            match eval_tx_status(tx_view) {
+                                Ok(()) => {
+                                    client_known_block_number = pending_block_number;
+                                    status_ok!("Success:", "Proof committed to chain")
+                                },
+                                Err(err) => status_warn!("Transaction evaluation failed: {}", err)
+                            }
+                        }, Err(err) => status_warn!("Miner transaction rejected: {}", err),
                     }
                 } else {
                     return Err(ErrorKind::Config
@@ -159,27 +166,15 @@ pub fn mine_and_submit(
                 }
             }
 
+            mining_height = block.height + 1; 
         }
     }
 }
 
-fn submit_proof(tx_params: &TxParams, block_to_submit: Block, 
-    is_operator: bool) -> Result<(), Error> {
-    match commit_proof_tx(&tx_params, block_to_submit.preimage, block_to_submit.proof, is_operator) {
-        Ok(tx_view) => match eval_tx_status(tx_view) {
-            Ok(_) => { 
-                status_ok!("Success:", "Proof committed to chain");
-                Ok(())
-            },
-            Err(_) => Err(ErrorKind::Config
-                .context("No Node for submitting transactions")
-                .into()),
-        },
-        Err(err) => Err(ErrorKind::Config
-            .context("No Node for submitting transactions")
-            .into()),
-    }
-}
+// fn submit_proof(tx_params: &TxParams, block_to_submit: Block, 
+//     is_operator: bool) -> Result<(), anyhow::Error> {
+    
+// }
 
 fn write_json(block: &Block, blocks_dir: &PathBuf) {
     if !&blocks_dir.exists() {

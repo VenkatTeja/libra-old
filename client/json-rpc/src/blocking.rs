@@ -9,8 +9,8 @@ use reqwest::{
 };
 use std::time::Duration;
 
-pub static JSON_RPC_TIMEOUT_MS: u64 = 5_000;
-pub static MAX_JSON_RPC_RETRY_COUNT: u64 = 2;
+const JSON_RPC_TIMEOUT_MS: u64 = 5_000;
+const MAX_JSON_RPC_RETRY_COUNT: u64 = 2;
 
 pub struct JsonRpcClient {
     url: Url,
@@ -25,9 +25,6 @@ impl JsonRpcClient {
         })
     }
 
-    pub fn update_url(&mut self, url: Url) {
-        self.url = url;
-    }
     /// Sends a JSON RPC batched request.
     /// Returns a vector of responses s.t. response order matches the request order
     pub fn execute(&self, batch: JsonRpcBatch) -> Result<Vec<Result<JsonRpcResponse>>> {

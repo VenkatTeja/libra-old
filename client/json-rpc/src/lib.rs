@@ -5,7 +5,7 @@ mod blocking;
 mod client;
 mod response;
 
-pub use blocking::{JsonRpcClient, JSON_RPC_TIMEOUT_MS, MAX_JSON_RPC_RETRY_COUNT};
+pub use blocking::{JsonRpcClient};
 pub use client::{
     get_response_from_batch, process_batch_response, JsonRpcAsyncClient, JsonRpcAsyncClientError,
     JsonRpcBatch,
