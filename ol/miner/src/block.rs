@@ -6,19 +6,23 @@ use crate::{
     error::{Error, ErrorKind},
     prelude::*,
     commit_proof::commit_proof_tx,
+    entrypoint::{self, EntryPointTxsCmd},
+    prelude::app_config
 };
 use byteorder::{LittleEndian, WriteBytesExt};
 use glob::glob;
 use hex::decode;
 use libra_crypto::hash::HashValue;
 use ol_types::block::Block;
-use txs::submit_tx::{TxParams, eval_tx_status};
+use txs::submit_tx::{TxParams, eval_tx_status, get_tx_params_from_toml};
 use std::{
     fs,
     io::{BufReader, Write},
     path::PathBuf,
     time::Instant,
 };
+use ol_types::{config::TxType};
+use cli::{libra_client::LibraClient};
 
 /// writes a JSON file with the vdf proof, ordered by a blockheight
 pub fn mine_genesis(config: &AppCfg) -> Block {
@@ -134,7 +138,6 @@ pub fn mine_and_submit(
             );
             
             for pending_block_number in (client_known_block_number+1)..(mining_height+1) {
-                status_info!(format!("Committing Block {}", pending_block_number), "to chain");
 
                 let block_to_submit: Block;
                 if client_known_block_number!=(mining_height-1) {
@@ -145,7 +148,8 @@ pub fn mine_and_submit(
                 } else {
                     block_to_submit = block.clone();
                 }
-                
+                status_info!(format!("Committing Block {}", block_to_submit.height), "to chain");
+
                 // Submit tx
                 if let Some(ref _node) = config.profile.default_node {
                     match commit_proof_tx(&tx_params, block_to_submit.preimage, block_to_submit.proof, is_operator) {
@@ -155,9 +159,15 @@ pub fn mine_and_submit(
                                     client_known_block_number = pending_block_number;
                                     status_ok!("Success:", "Proof committed to chain")
                                 },
-                                Err(err) => status_warn!("Transaction evaluation failed: {}", err)
+                                Err(err) => {
+                                    status_warn!("Transaction evaluation failed: {}", err);
+                                    break
+                                }
                             }
-                        }, Err(err) => status_warn!("Miner transaction rejected: {}", err),
+                        }, Err(err) => {
+                            status_warn!("Miner transaction rejected: {}", err);
+                            break
+                        }
                     }
                 } else {
                     return Err(ErrorKind::Config
@@ -503,4 +513,27 @@ pub fn genesis_preimage(cfg: &AppCfg) -> Vec<u8> {
         "Preimage is the incorrect byte length"
     );
     return preimage;
+}
+
+pub fn get_client() -> LibraClient {
+    let app_config = test_make_configs_fixture();
+    let EntryPointTxsCmd {
+        url,
+        waypoint,
+        swarm_path,
+        swarm_persona,
+        is_operator,
+        use_upstream_url,
+        ..
+    } = entrypoint::get_args();
+
+    let url = if url.is_some() {
+        println!("URL1");
+        url.unwrap()
+    } else {
+        println!("URL2");
+        app_config.what_url(use_upstream_url)
+    };
+    println!("URL: {}", url);
+    LibraClient::new(url.clone(), waypoint.unwrap()).unwrap()
 }
