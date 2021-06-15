@@ -4,16 +4,23 @@
 use std::{fs, path::{Path}, process::{Command, Stdio}, thread, time::{self, Duration}};
 use libra_config::config::NodeConfig;
 use ol::config::AppCfg;
-use txs::submit_tx::TxParams;
-use anyhow::{bail};
+use txs::submit_tx::{TxParams, get_tx_params_from_swarm};
+use anyhow::{bail, Error};
 
 #[test]
+/// In case the miner fails to connect with client, miner should continue mining 
+/// and submit the backlog on each block. This test simulates this issue by blocking 
+/// the port in between and testing the connectivity. 
 pub fn integration_submit_tx() {
-    // PREPARE FIXTURES
-    // the transactions will always abort if the fixtures are incorrect.
-    // in swarm, all validators in genesis used NodeConfig.defaul() preimage and proofs.
-    // these are equivalent to fixtures/block_0.json.test.alice 
-    // for the test to work:
+    
+    let mut block_port_cmd = Command::new("sudo");
+    block_port_cmd.arg("iptables").arg("-A").arg("OUTPUT").arg("-p")
+        .arg("tcp").arg("--match").arg("multiport").arg("--dports")
+        .arg("4444").arg("-j").arg("DROP");
+    block_port_cmd.stdout(Stdio::inherit())
+        .stderr(Stdio::inherit())
+        .spawn()
+        .unwrap();
 
     // the miner needs to start producing block_1.json. If block_1.json is not successful, then block_2 cannot be either, because it depends on certain on-chain state from block_1 correct submission.
     let miner_source_path = Path::new(env!("CARGO_MANIFEST_DIR"));
@@ -21,7 +28,10 @@ pub fn integration_submit_tx() {
     let home = dirs::home_dir().unwrap();
     let swarm_configs_path = home.join(".0L/swarm_temp/");
 
-    fs::remove_dir_all(&swarm_configs_path).unwrap();
+    match fs::remove_dir_all(&swarm_configs_path) {
+        Ok(_) => { println!("wiping swarm temp directory! {:?}", &swarm_configs_path)},
+        Err(_) => {},
+    }
 
     let node_exec = &root_source_path.join("target/debug/libra-node");
     // TODO: Assert that block_0.json is in blocks folder.
@@ -65,13 +75,6 @@ pub fn integration_submit_tx() {
                     .spawn()
                     .unwrap();
             init_child.wait().unwrap();
-            // // copy fixtures
-            // fs::create_dir_all(swarm_configs_path.join("blocks")).unwrap();
-            // // copy fixtures/block_0.json.test.alice -> blocks/block_0.json
-            // fs::copy(
-            //   root_source_path.join("ol/fixtures/blocks/test/alice/block_0.json"), 
-            //   swarm_configs_path.join("blocks/block_0.json")
-            // ).unwrap();
 
             // start the miner swarm test helper.
             let mut miner_cmd = Command::new("cargo");
@@ -92,37 +95,65 @@ pub fn integration_submit_tx() {
             // TODO: need to parse output of the stdio
 
             // set a timeout. Let the node run for sometime. 
-            let test_timeout = Duration::from_secs(120);
+            let test_timeout = Duration::from_secs(30);
             thread::sleep(test_timeout);
+
+            // TODO: make these paths references
+            let tx_params = get_tx_params_from_swarm(swarm_configs_path.clone(), "alice".to_owned(), false).unwrap();// TO write logic
+            let config =  AppCfg::init_app_configs_swarm(swarm_configs_path.clone(), swarm_configs_path.join("0"));
+
+            let mut blocks_dir = config.workspace.node_home.clone();
+            blocks_dir.push(&config.workspace.block_dir);
+
+
+            let (current_block_number, _current_block_path) = miner::block::parse_block_height(&blocks_dir);
+            let block_number_before_block = current_block_number.unwrap();
             
-            let tx_params = ;// TO write logic
-            let config = ;
 
             println!("Check node sync before disabling port");
-            check_node_sync(&tx_params, &config);
+            match check_node_sync(&tx_params, &config) {
+                Ok(()) => {},
+                Err(err) => {
+                    swarm_child.kill().unwrap();
+                    miner_child.kill().unwrap();
+                    std::panic!("Check node sync failed: {}", err)
+                }
+            };
                 
             let port = get_node_port(); // node port
 
-            // Block port
-            let mut block_port_cmd = Command::new("iptables");
-            block_port_cmd.arg("-A").arg("OUTPUT").arg("-p")
+            // Block the port
+            println!("Blocking the port: {}", port);
+            let mut block_port_cmd = Command::new("sudo");
+            block_port_cmd.arg("iptables").arg("-A").arg("OUTPUT").arg("-p")
                 .arg("tcp").arg("--match").arg("multiport").arg("--dports")
-                .arg(port).arg("-j").arg("DROP");
-            let mut block_port_child = block_port_cmd.stdout(Stdio::inherit())
+                .arg(port.to_string()).arg("-j").arg("DROP");
+            block_port_cmd.stdout(Stdio::inherit())
                 .stderr(Stdio::inherit())
                 .spawn()
                 .unwrap();
             
+            
+
             // let miner mine without submitting
-            let test_timeout = Duration::from_secs(60);
+            let test_timeout = Duration::from_secs(240); // atleast 120. To let the timeout happen and continue mining. 
             thread::sleep(test_timeout);
             
+            let (current_block_number, _current_block_path) = miner::block::parse_block_height(&blocks_dir);
+            let block_number_after_unblock = current_block_number.unwrap();
+            
+            // Miner should have continued mining. +1 to consider atleast 2 blocks mined. 
+            if block_number_after_unblock <= (block_number_before_block + 1) {
+                std::panic!("Miner did not mine during port block: Blocks Before block: {}, blocks after unblock: {}", block_number_before_block, block_number_after_unblock);
+            }
+
             // activate the port
-            let mut activate_port_cmd = Command::new("iptables");
-            activate_port_cmd.arg("-D").arg("OUTPUT").arg("-p")
+            println!("Reactivate the port: {}", port);
+            let mut activate_port_cmd = Command::new("sudo");
+            activate_port_cmd.arg("iptables").arg("-D").arg("OUTPUT").arg("-p")
                 .arg("tcp").arg("--match").arg("multiport").arg("--dports")
-                .arg(port).arg("-j").arg("DROP");
-            let mut activate_port_child = activate_port_cmd.stdout(Stdio::inherit())
+                .arg(port.to_string()).arg("-j").arg("DROP");
+            activate_port_cmd.stdout(Stdio::inherit())
                 .stderr(Stdio::inherit())
                 .spawn()
                 .unwrap();
@@ -131,7 +162,14 @@ pub fn integration_submit_tx() {
             let test_timeout = Duration::from_secs(60);
             thread::sleep(test_timeout);
             println!("Check node sync after disabling port");
-            check_node_sync(&tx_params, &config);
+            match check_node_sync(&tx_params, &config) {
+                Ok(()) => {},
+                Err(err) => {
+                    swarm_child.kill().unwrap();
+                    miner_child.kill().unwrap();
+                    std::panic!("Check node sync failed after block & re-active port: {}", err)
+                }
+            };
 
             swarm_child.kill().unwrap();
             miner_child.kill().unwrap();
@@ -170,7 +208,7 @@ fn get_node_port() -> u16 {
     node_conf.json_rpc.address.port()
 }
 
-fn check_node_sync(tx_params: &TxParams, config: &AppCfg) {
+fn check_node_sync(tx_params: &TxParams, config: &AppCfg) -> Result<(), Error> {
     let remote_state = miner::backlog::get_remote_state(&tx_params).unwrap();
     let remote_height = remote_state.verified_tower_height;
     println!("Remote tower height: {}", remote_height);
@@ -181,7 +219,9 @@ fn check_node_sync(tx_params: &TxParams, config: &AppCfg) {
     let current_block_number = current_block_number.unwrap();
     println!("Local tower height: {}", current_block_number);
 
-    if current_block_number != remote_height {
-        std::panic!("Block heights don't match");
+    // The client can be in sync with local or -1 wrt local. 
+    if (current_block_number != remote_height) && (current_block_number - 1)!= remote_height {
+        bail!("Block heights don't match: Miner: {}, Remote: {}", current_block_number, remote_height)
     }
+    Ok(())
 }

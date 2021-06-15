@@ -3,26 +3,23 @@
 use ol_types::config::AppCfg;
 use crate::{
     delay::*,
+    backlog,
     error::{Error, ErrorKind},
     prelude::*,
-    commit_proof::commit_proof_tx,
-    entrypoint::{self, EntryPointTxsCmd},
-    prelude::app_config
+    commit_proof::commit_proof_tx
 };
 use byteorder::{LittleEndian, WriteBytesExt};
 use glob::glob;
 use hex::decode;
 use libra_crypto::hash::HashValue;
 use ol_types::block::Block;
-use txs::submit_tx::{TxParams, eval_tx_status, get_tx_params_from_toml};
+use txs::submit_tx::{TxParams, eval_tx_status};
 use std::{
     fs,
     io::{BufReader, Write},
     path::PathBuf,
     time::Instant,
 };
-use ol_types::{config::TxType};
-use cli::{libra_client::LibraClient};
 
 /// writes a JSON file with the vdf proof, ordered by a blockheight
 pub fn mine_genesis(config: &AppCfg) -> Block {
@@ -109,15 +106,15 @@ pub fn mine_and_submit(
         std::process::exit(0);
     } else {
         // the max block that has been succesfully submitted to client
-        let mut client_known_block_number = current_block_number.unwrap();
+        let mut remote_height = current_block_number.unwrap();
         // in the beginning, mining height is +1 of client block number
-        let mut mining_height = client_known_block_number + 1; 
+        let mut mining_height = remote_height + 1; 
 
         // mine continuously from the last block in the file systems
         loop {
             status_info!(
                 "Latest client block:",
-                format!("{}", client_known_block_number)
+                format!("{}", remote_height)
             );
 
             status_info!(format!("Block {}", mining_height), "Mining VDF Proof");
@@ -137,10 +134,11 @@ pub fn mine_and_submit(
                 format!("block_{}.json created.", block.height.to_string())
             );
             
-            for pending_block_number in (client_known_block_number+1)..(mining_height+1) {
+            // submits backlog to client
+            for pending_block_number in (remote_height+1)..(mining_height+1) {
 
                 let block_to_submit: Block;
-                if client_known_block_number!=(mining_height-1) {
+                if remote_height!=(mining_height-1) {
                     // read block
                     let block_path = format!("{}/block_{}.json", blocks_dir.display(), pending_block_number);
                     let block_file = fs::read_to_string(block_path).expect("Could not read latest block");
@@ -154,13 +152,24 @@ pub fn mine_and_submit(
                 if let Some(ref _node) = config.profile.default_node {
                     match commit_proof_tx(&tx_params, block_to_submit.preimage, block_to_submit.proof, is_operator) {
                         Ok(tx_view) => {
-                            match eval_tx_status(tx_view) {
+                            match eval_tx_status(tx_view.clone()) {
                                 Ok(()) => {
-                                    client_known_block_number = pending_block_number;
+                                    // Resetting client 
+                                    remote_height = pending_block_number;
                                     status_ok!("Success:", "Proof committed to chain")
                                 },
                                 Err(err) => {
                                     status_warn!("Transaction evaluation failed: {}", err);
+                                    // Sometimes tx is submitted but evaluation is throwing error. 
+                                    // So, we get the latest state to confirm once. 
+                                    match backlog::get_remote_state(&tx_params) {
+                                        Ok(remote_state) => {
+                                            remote_height = remote_state.verified_tower_height
+                                        },
+                                        Err(err) => {
+                                            status_warn!("Failed fetching remote state: {}", err);
+                                        }
+                                    }
                                     break
                                 }
                             }
@@ -180,11 +189,6 @@ pub fn mine_and_submit(
         }
     }
 }
-
-// fn submit_proof(tx_params: &TxParams, block_to_submit: Block, 
-//     is_operator: bool) -> Result<(), anyhow::Error> {
-    
-// }
 
 fn write_json(block: &Block, blocks_dir: &PathBuf) {
     if !&blocks_dir.exists() {
@@ -515,25 +519,3 @@ pub fn genesis_preimage(cfg: &AppCfg) -> Vec<u8> {
     return preimage;
 }
 
-pub fn get_client() -> LibraClient {
-    let app_config = test_make_configs_fixture();
-    let EntryPointTxsCmd {
-        url,
-        waypoint,
-        swarm_path,
-        swarm_persona,
-        is_operator,
-        use_upstream_url,
-        ..
-    } = entrypoint::get_args();
-
-    let url = if url.is_some() {
-        println!("URL1");
-        url.unwrap()
-    } else {
-        println!("URL2");
-        app_config.what_url(use_upstream_url)
-    };
-    println!("URL: {}", url);
-    LibraClient::new(url.clone(), waypoint.unwrap()).unwrap()
-}

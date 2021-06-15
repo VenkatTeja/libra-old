@@ -21,7 +21,7 @@ use libra_json_rpc_types::views::{MinerStateResourceView};
 pub fn process_backlog(config: &AppCfg, tx_params: &TxParams, is_operator: bool) {
     // Getting remote miner state
     
-    let remote_state = get_remote_state(&tx_params).unwrap();
+    let remote_state = get_remote_state(tx_params).unwrap();
     let remote_height = remote_state.verified_tower_height;
 
     println!("Remote tower height: {}", remote_height);
@@ -55,7 +55,7 @@ pub fn process_backlog(config: &AppCfg, tx_params: &TxParams, is_operator: bool)
 /// returns remote node state given tx_params
 pub fn get_remote_state(tx_params: &TxParams) -> Result<MinerStateResourceView, Error> {
     let mut client = LibraClient::new(tx_params.url.clone(), tx_params.waypoint).unwrap();
-    println!("Fetching remote tower height");
+    println!("Fetching remote tower height: {}, {}", tx_params.url.clone(), tx_params.owner_address.clone());
     let remote_state = client.get_miner_state(tx_params.owner_address.clone());
     match remote_state {
         Ok( s ) => { match s {
