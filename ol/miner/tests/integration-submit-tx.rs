@@ -13,15 +13,6 @@ use anyhow::{bail, Error};
 /// the port in between and testing the connectivity. 
 pub fn integration_submit_tx() {
     
-    let mut block_port_cmd = Command::new("sudo");
-    block_port_cmd.arg("iptables").arg("-A").arg("OUTPUT").arg("-p")
-        .arg("tcp").arg("--match").arg("multiport").arg("--dports")
-        .arg("4444").arg("-j").arg("DROP");
-    block_port_cmd.stdout(Stdio::inherit())
-        .stderr(Stdio::inherit())
-        .spawn()
-        .unwrap();
-
     // the miner needs to start producing block_1.json. If block_1.json is not successful, then block_2 cannot be either, because it depends on certain on-chain state from block_1 correct submission.
     let miner_source_path = Path::new(env!("CARGO_MANIFEST_DIR"));
     let root_source_path = miner_source_path.parent().unwrap().parent().unwrap();
